@@ -186,6 +186,8 @@
             eventSource.onopen = () => {
                 connectionStatus.textContent = 'Połączono';
                 connectionStatus.className = 'connected';
+
+                setInterval(() => fetch('/ping').catch(() => {}), 25000);
             };
 
             eventSource.onerror = () => {
@@ -277,13 +279,32 @@
         window.addEventListener('mousedown', e => { if (e.button === 0) shootProjectile(); });
 
         function shootProjectile() {
-            const player = gameState.players[gameState.currentPlayerId];
-            if (!player || !player.isAlive) return;
-            const now = Date.now();
-            if (now - player.lastShotTime < CONFIG.SHOT_COOLDOWN) return;
-            player.lastShotTime = now;
-            sendToServer({ type: 'shoot', id: gameState.currentPlayerId });
-        }
+    const player = gameState.players[gameState.currentPlayerId];
+    if (!player || !player.isAlive) return;
+
+    const now = Date.now();
+    if (now - (player.lastShotTime || 0) < CONFIG.SHOT_COOLDOWN) return;
+    player.lastShotTime = now;
+
+    // Oblicz kierunek strzału względem pozycji gracza
+    const angle = Math.atan2(mouseY - player.y, mouseX - player.x);
+    const dx = Math.cos(angle);
+    const dy = Math.sin(angle);
+
+    // Wyślij dane o pocisku do serwera
+    sendToServer({
+        type: "shoot",
+        projectile: {
+            x: player.x,
+            y: player.y,
+            dx,
+            dy,
+            color: player.color,
+            shooter: player.id,
+        },
+    });
+}
+
 
         function updateGame() {
             const player = gameState.players[gameState.currentPlayerId];
@@ -300,16 +321,28 @@
         }
 
         function renderGame() {
-            ctx.fillStyle = '#333';
-            ctx.fillRect(0, 0, gameCanvas.width, gameCanvas.height);
-            Object.values(gameState.players).forEach(p => {
-                ctx.fillStyle = p.color || 'white';
-                ctx.beginPath();
-                ctx.arc(p.x, p.y, CONFIG.PLAYER_RADIUS, 0, Math.PI * 2);
-                ctx.fill();
-            });
-            requestAnimationFrame(renderGame);
-        }
+    ctx.fillStyle = '#333';
+    ctx.fillRect(0, 0, gameCanvas.width, gameCanvas.height);
+
+    // Rysuj graczy
+    Object.values(gameState.players).forEach(p => {
+        ctx.fillStyle = p.color || 'white';
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, CONFIG.PLAYER_RADIUS, 0, Math.PI * 2);
+        ctx.fill();
+    });
+
+    // Rysuj pociski
+    gameState.projectiles.forEach(p => {
+        ctx.fillStyle = p.color || 'yellow';
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, CONFIG.PROJECTILE_RADIUS, 0, Math.PI * 2);
+        ctx.fill();
+    });
+
+    requestAnimationFrame(renderGame);
+}
+
 
         function startGame() {
             connectSSE();
