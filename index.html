@@ -146,7 +146,6 @@
     </div>
 
     <script>
-        // Konfiguracja gry
         const CONFIG = {
             CANVAS_WIDTH: 2000,
             CANVAS_HEIGHT: 2000,
@@ -154,10 +153,9 @@
             PROJECTILE_RADIUS: 5,
             PROJECTILE_SPEED: 10,
             PLAYER_SPEED: 5,
-            SHOT_COOLDOWN: 1000 // 1 sekunda cooldown
+            SHOT_COOLDOWN: 1000
         };
 
-        // Elementy DOM
         const gameCanvas = document.getElementById('gameCanvas');
         const ctx = gameCanvas.getContext('2d');
         const connectionStatus = document.getElementById('connectionStatus');
@@ -168,166 +166,104 @@
         const respawnTimer = document.getElementById('respawnTimer');
         const respawnCounter = document.getElementById('respawnCounter');
 
-        // Dostosowanie canvas
         function resizeCanvas() {
             gameCanvas.width = window.innerWidth;
             gameCanvas.height = window.innerHeight;
         }
-        
         window.addEventListener('resize', resizeCanvas);
         resizeCanvas();
 
-        // Stan gry
-        let gameState = {
-            players: {},
-            projectiles: [],
-            currentPlayerId: null,
-            isHost: false
-        };
+        let gameState = { players: {}, projectiles: [], currentPlayerId: null };
+        let localState = { lastShotTime: 0, respawnInterval: null };
+        const keys = {};
+        let mouseX = 0, mouseY = 0;
 
-        // Stan lokalny
-        let localState = {
-            lastShotTime: 0,
-            respawnInterval: null
-        };
+        // SSE (odbiór danych z serwera)
+        function connectSSE() {
+            const url = `${window.location.origin}/stream`;
+            const eventSource = new EventSource(url);
 
-        // WebSocket z poprawnym URL
-        let ws = null;
-        
-        function connectWebSocket() {
-            // Używamy tej samej domeny i portu, ale ścieżki /ws
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws`;
-            const socket = new WebSocket(wsUrl);
-
-            
-            console.log('Łączenie z:', wsUrl);
-            ws = new WebSocket(wsUrl);
-            
-            ws.onopen = () => {
-                console.log('Połączono z serwerem');
+            eventSource.onopen = () => {
                 connectionStatus.textContent = 'Połączono';
                 connectionStatus.className = 'connected';
             };
-            
-            ws.onclose = () => {
-                console.log('Rozłączono z serwerem');
-                connectionStatus.textContent = 'Rozłączono - próba ponownego połączenia...';
-                connectionStatus.className = 'disconnected';
-                setTimeout(connectWebSocket, 3000);
-            };
-            
-            ws.onerror = (error) => {
-                console.error('Błąd WebSocket:', error);
-                connectionStatus.textContent = 'Błąd połączenia';
+
+            eventSource.onerror = () => {
+                connectionStatus.textContent = 'Rozłączono - ponawianie...';
                 connectionStatus.className = 'disconnected';
             };
-            
-            ws.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    handleServerMessage(data);
-                } catch (error) {
-                    console.error('Błąd parsowania wiadomości:', error);
-                }
+
+            eventSource.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                handleServerMessage(data);
             };
         }
 
-        // Obsługa wiadomości
+        // Wysyłanie danych do serwera
+        function sendToServer(data) {
+            fetch('/update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            }).catch(err => console.error('Błąd wysyłania:', err));
+        }
+
         function handleServerMessage(data) {
             switch (data.type) {
-                case 'playerId':
+                case 'init':
                     gameState.currentPlayerId = data.id;
-                    gameState.isHost = data.isHost;
-                    console.log(`ID: ${data.id}, Host: ${data.isHost}`);
-                    updatePlayerStats();
                     break;
-                    
-                case 'gameState':
+                case 'state':
                     gameState.players = data.players;
                     gameState.projectiles = data.projectiles;
                     updatePlayerList();
                     updatePlayerStats();
                     break;
-                    
-                case 'playerJoined':
-                    console.log(`Dołączył: ${data.playerId}`);
-                    break;
-                    
-                case 'playerLeft':
-                    console.log(`Wyszedł: ${data.playerId}`);
-                    delete gameState.players[data.playerId];
-                    updatePlayerList();
-                    break;
-
                 case 'playerDied':
-                    if (data.playerId === gameState.currentPlayerId) {
+                    if (data.playerId === gameState.currentPlayerId)
                         startRespawnTimer(data.respawnTime);
-                    }
                     break;
             }
         }
 
-        // Aktualizacja listy graczy
         function updatePlayerList() {
             playerCount.textContent = Object.keys(gameState.players).length;
             playerList.innerHTML = '';
-            
-            Object.values(gameState.players).forEach(player => {
-                const playerItem = document.createElement('div');
-                playerItem.className = 'playerItem';
-                playerItem.style.backgroundColor = player.color;
-                const isCurrent = player.id === gameState.currentPlayerId;
-                const status = player.isAlive ? ` (Życia: ${player.lives})` : ' (MARTWY)';
-                playerItem.textContent = `Gracz ${player.id.substring(0, 8)}${isCurrent ? ' (Ty)' : ''}${status}`;
-                playerList.appendChild(playerItem);
+            Object.values(gameState.players).forEach(p => {
+                const item = document.createElement('div');
+                item.className = 'playerItem';
+                item.style.backgroundColor = p.color;
+                item.textContent = `Gracz ${p.id.substring(0, 5)} (${p.lives} żyć)`;
+                playerList.appendChild(item);
             });
         }
 
-        // Aktualizacja statystyk gracza
         function updatePlayerStats() {
-            const player = gameState.players[gameState.currentPlayerId];
-            if (!player) return;
-
-            // Wyświetl życia
+            const p = gameState.players[gameState.currentPlayerId];
+            if (!p) return;
             livesDisplay.innerHTML = '';
             for (let i = 0; i < 3; i++) {
                 const life = document.createElement('span');
-                life.className = `life ${i >= player.lives ? 'lost' : ''}`;
+                life.className = `life ${i >= p.lives ? 'lost' : ''}`;
                 livesDisplay.appendChild(life);
             }
-
-            // Aktualizuj cooldown
             updateCooldownDisplay();
         }
 
-        // Aktualizacja paska cooldown
         function updateCooldownDisplay() {
-            const player = gameState.players[gameState.currentPlayerId];
-            if (!player || !player.isAlive) {
-                cooldownProgress.style.width = '0%';
-                return;
-            }
-
+            const p = gameState.players[gameState.currentPlayerId];
+            if (!p) return;
             const now = Date.now();
-            const timeSinceLastShot = now - player.lastShotTime;
-            const cooldownPercent = Math.min((timeSinceLastShot / CONFIG.SHOT_COOLDOWN) * 100, 100);
-            
-            cooldownProgress.style.width = cooldownPercent + '%';
+            const cooldownPercent = Math.min((now - p.lastShotTime) / CONFIG.SHOT_COOLDOWN * 100, 100);
+            cooldownProgress.style.width = `${cooldownPercent}%`;
         }
 
-        // Timer odradzania
         function startRespawnTimer(respawnTime) {
             respawnTimer.style.display = 'block';
-            
-            if (localState.respawnInterval) {
-                clearInterval(localState.respawnInterval);
-            }
-            
+            if (localState.respawnInterval) clearInterval(localState.respawnInterval);
             localState.respawnInterval = setInterval(() => {
                 const timeLeft = Math.max(0, Math.ceil((respawnTime - Date.now()) / 1000));
                 respawnCounter.textContent = timeLeft;
-                
                 if (timeLeft <= 0) {
                     clearInterval(localState.respawnInterval);
                     respawnTimer.style.display = 'none';
@@ -335,179 +271,48 @@
             }, 100);
         }
 
-        // Sterowanie
-        const keys = {};
-        let mouseX = 0, mouseY = 0;
-        
-        window.addEventListener('keydown', (e) => {
-            keys[e.key.toLowerCase()] = true;
-        });
-        
-        window.addEventListener('keyup', (e) => {
-            keys[e.key.toLowerCase()] = false;
-        });
-        
-        window.addEventListener('mousemove', (e) => {
-            mouseX = e.clientX;
-            mouseY = e.clientY;
-        });
-        
-        window.addEventListener('mousedown', (e) => {
-            if (e.button === 0) {
-                shootProjectile();
-            }
-        });
+        window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+        window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+        window.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
+        window.addEventListener('mousedown', e => { if (e.button === 0) shootProjectile(); });
 
-        // Strzelanie z cooldown
         function shootProjectile() {
-            if (!gameState.currentPlayerId || !ws) return;
-            
             const player = gameState.players[gameState.currentPlayerId];
             if (!player || !player.isAlive) return;
-
             const now = Date.now();
-            if (now - player.lastShotTime < CONFIG.SHOT_COOLDOWN) {
-                return; // Cooldown aktywny
-            }
-
-            const angle = player.angle;
-            const projectile = {
-                x: player.x,
-                y: player.y,
-                velocityX: Math.cos(angle) * CONFIG.PROJECTILE_SPEED,
-                velocityY: Math.sin(angle) * CONFIG.PROJECTILE_SPEED,
-                color: player.color,
-                playerId: gameState.currentPlayerId,
-                createdAt: Date.now()
-            };
-            
-            // Zaktualizuj czas ostatniego strzału
+            if (now - player.lastShotTime < CONFIG.SHOT_COOLDOWN) return;
             player.lastShotTime = now;
-            updateCooldownDisplay();
-            
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                    type: 'shoot',
-                    projectile: projectile,
-                    playerId: gameState.currentPlayerId
-                }));
-            }
+            sendToServer({ type: 'shoot', id: gameState.currentPlayerId });
         }
 
-        // Aktualizacja gry
         function updateGame() {
-            if (gameState.currentPlayerId && gameState.players[gameState.currentPlayerId]) {
-                const player = gameState.players[gameState.currentPlayerId];
-                
-                // Aktualizuj tylko jeśli gracz żyje
-                if (player.isAlive) {
-                    // Poruszanie
-                    player.velocityX = 0;
-                    player.velocityY = 0;
-                    
-                    if (keys['w']) player.velocityY = -CONFIG.PLAYER_SPEED;
-                    if (keys['s']) player.velocityY = CONFIG.PLAYER_SPEED;
-                    if (keys['a']) player.velocityX = -CONFIG.PLAYER_SPEED;
-                    if (keys['d']) player.velocityX = CONFIG.PLAYER_SPEED;
-                    
-                    player.x += player.velocityX;
-                    player.y += player.velocityY;
-                    
-                    // Granice
-                    player.x = Math.max(CONFIG.PLAYER_RADIUS, Math.min(CONFIG.CANVAS_WIDTH - CONFIG.PLAYER_RADIUS, player.x));
-                    player.y = Math.max(CONFIG.PLAYER_RADIUS, Math.min(CONFIG.CANVAS_HEIGHT - CONFIG.PLAYER_RADIUS, player.y));
-                    
-                    // Celowanie
-                    const canvasRect = gameCanvas.getBoundingClientRect();
-                    const worldX = (mouseX / gameCanvas.width) * CONFIG.CANVAS_WIDTH;
-                    const worldY = (mouseY / gameCanvas.height) * CONFIG.CANVAS_HEIGHT;
-                    player.angle = Math.atan2(worldY - player.y, worldX - player.x);
-                    
-                    // Wyślij aktualizację
-                    if (ws && ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({
-                            type: 'playerUpdate',
-                            player: player
-                        }));
-                    }
-                }
+            const player = gameState.players[gameState.currentPlayerId];
+            if (player && player.isAlive) {
+                player.vx = (keys['d'] ? CONFIG.PLAYER_SPEED : 0) - (keys['a'] ? CONFIG.PLAYER_SPEED : 0);
+                player.vy = (keys['s'] ? CONFIG.PLAYER_SPEED : 0) - (keys['w'] ? CONFIG.PLAYER_SPEED : 0);
+                player.x += player.vx;
+                player.y += player.vy;
+                player.angle = Math.atan2(mouseY - player.y, mouseX - player.x);
+                sendToServer({ type: 'move', player });
             }
-            
             updateCooldownDisplay();
             requestAnimationFrame(updateGame);
         }
 
-        // Renderowanie
         function renderGame() {
             ctx.fillStyle = '#333';
             ctx.fillRect(0, 0, gameCanvas.width, gameCanvas.height);
-            
-            // Gracze
-            Object.values(gameState.players).forEach(player => {
-                const screenX = (player.x / CONFIG.CANVAS_WIDTH) * gameCanvas.width;
-                const screenY = (player.y / CONFIG.CANVAS_HEIGHT) * gameCanvas.height;
-                
-                if (!player.isAlive) {
-                    // Renderuj martwego gracza jako szarego
-                    ctx.fillStyle = '#666';
-                    ctx.beginPath();
-                    ctx.arc(screenX, screenY, CONFIG.PLAYER_RADIUS, 0, Math.PI * 2);
-                    ctx.fill();
-                    
-                    ctx.fillStyle = '#fff';
-                    ctx.font = '12px Arial';
-                    ctx.textAlign = 'center';
-                    ctx.fillText('X', screenX, screenY + 4);
-                    return;
-                }
-                
-                // Kulka żywego gracza
-                ctx.fillStyle = player.color;
+            Object.values(gameState.players).forEach(p => {
+                ctx.fillStyle = p.color || 'white';
                 ctx.beginPath();
-                ctx.arc(screenX, screenY, CONFIG.PLAYER_RADIUS, 0, Math.PI * 2);
-                ctx.fill();
-                
-                // Kierunek
-                ctx.strokeStyle = '#fff';
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-                ctx.moveTo(screenX, screenY);
-                ctx.lineTo(
-                    screenX + Math.cos(player.angle) * 30,
-                    screenY + Math.sin(player.angle) * 30
-                );
-                ctx.stroke();
-                
-                // Podświetlenie lokalnego gracza
-                if (player.id === gameState.currentPlayerId) {
-                    ctx.strokeStyle = '#fff';
-                    ctx.lineWidth = 3;
-                    ctx.beginPath();
-                    ctx.arc(screenX, screenY, CONFIG.PLAYER_RADIUS + 3, 0, Math.PI * 2);
-                    ctx.stroke();
-                }
-            });
-            
-            // Pociski
-            gameState.projectiles.forEach(projectile => {
-                ctx.fillStyle = projectile.color;
-                ctx.beginPath();
-                ctx.arc(
-                    (projectile.x / CONFIG.CANVAS_WIDTH) * gameCanvas.width,
-                    (projectile.y / CONFIG.CANVAS_HEIGHT) * gameCanvas.height,
-                    CONFIG.PROJECTILE_RADIUS,
-                    0,
-                    Math.PI * 2
-                );
+                ctx.arc(p.x, p.y, CONFIG.PLAYER_RADIUS, 0, Math.PI * 2);
                 ctx.fill();
             });
-            
             requestAnimationFrame(renderGame);
         }
 
-        // Start gry
         function startGame() {
-            connectWebSocket();
+            connectSSE();
             updateGame();
             renderGame();
         }
