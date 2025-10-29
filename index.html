@@ -215,7 +215,7 @@
                 case 'init':
                     gameState.currentPlayerId = data.id;
                     break;
-                case 'state':
+                case 'gameState':
                     gameState.players = data.players;
                     gameState.projectiles = data.projectiles;
                     updatePlayerList();
@@ -224,6 +224,10 @@
                 case 'playerDied':
                     if (data.playerId === gameState.currentPlayerId)
                         startRespawnTimer(data.respawnTime);
+                    break;
+                case 'playerId':
+                    gameState.currentPlayerId = data.id;
+                    console.log("🟢 Mój ID gracza:", data.id);
                     break;
             }
         }
@@ -279,31 +283,31 @@
         window.addEventListener('mousedown', e => { if (e.button === 0) shootProjectile(); });
 
         function shootProjectile() {
-    const player = gameState.players[gameState.currentPlayerId];
-    if (!player || !player.isAlive) return;
+            const player = gameState.players[gameState.currentPlayerId];
+            if (!player || !player.isAlive) return;
 
-    const now = Date.now();
-    if (now - (player.lastShotTime || 0) < CONFIG.SHOT_COOLDOWN) return;
-    player.lastShotTime = now;
+            const now = Date.now();
+            if (now - (player.lastShotTime || 0) < CONFIG.SHOT_COOLDOWN) return;
+            player.lastShotTime = now;
 
-    // Oblicz kierunek strzału względem pozycji gracza
-    const angle = Math.atan2(mouseY - player.y, mouseX - player.x);
-    const dx = Math.cos(angle);
-    const dy = Math.sin(angle);
+            // Oblicz kierunek strzału względem pozycji gracza
+            const angle = Math.atan2(mouseY - player.y, mouseX - player.x);
+            const dx = Math.cos(angle);
+            const dy = Math.sin(angle);
 
-    // Wyślij dane o pocisku do serwera
-    sendToServer({
-        type: "shoot",
-        projectile: {
-            x: player.x,
-            y: player.y,
-            dx,
-            dy,
-            color: player.color,
-            shooter: player.id,
-        },
-    });
-}
+            // Wyślij dane o pocisku do serwera
+            sendToServer({
+                type: "shoot",
+                projectile: {
+                    x: player.x,
+                    y: player.y,
+                    dx,
+                    dy,
+                    color: player.color,
+                    shooter: player.id,
+                },
+            });
+        }
 
 
         function updateGame() {
@@ -314,7 +318,20 @@
                 player.x += player.vx;
                 player.y += player.vy;
                 player.angle = Math.atan2(mouseY - player.y, mouseX - player.x);
-                sendToServer({ type: 'move', player });
+
+                sendToServer({
+                type: 'move',
+                player: {
+                    id: gameState.currentPlayerId,
+                    x: player.x,
+                    y: player.y,
+                    angle: player.angle,
+                    color: player.color,
+                    lives: player.lives,
+                    isAlive: player.isAlive
+                }
+                });
+
             }
             updateCooldownDisplay();
             requestAnimationFrame(updateGame);
@@ -330,7 +347,19 @@
         ctx.beginPath();
         ctx.arc(p.x, p.y, CONFIG.PLAYER_RADIUS, 0, Math.PI * 2);
         ctx.fill();
+
+        // 🔫 Rysuj "pistolet" / lufę
+        const barrelLength = 25;
+        const barrelX = p.x + Math.cos(p.angle) * barrelLength;
+        const barrelY = p.y + Math.sin(p.angle) * barrelLength;
+        ctx.strokeStyle = 'black';
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(barrelX, barrelY);
+        ctx.stroke();
     });
+
 
     // Rysuj pociski
     gameState.projectiles.forEach(p => {
