@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gra Kulki Online</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #222;
+            font-family: Arial, sans-serif;
+            color: white;
+        }
+        
+        #gameContainer {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        #gameCanvas {
+            display: block;
+            background-color: #333;
+        }
+        
+        #uiContainer {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            padding: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            border-radius: 5px;
+            max-width: 300px;
+        }
+        
+        #connectionStatus {
+            margin-bottom: 10px;
+            padding: 5px;
+            border-radius: 3px;
+            text-align: center;
+        }
+        
+        .connected {
+            background-color: #2a2;
+        }
+        
+        .disconnected {
+            background-color: #a22;
+        }
+        
+        #playerList {
+            margin-top: 10px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        
+        .playerItem {
+            margin: 5px 0;
+            padding: 3px;
+            border-radius: 3px;
+        }
+        
+        #playerStats {
+            margin-top: 10px;
+            padding: 5px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 3px;
+        }
+        
+        .life {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background: #f00;
+            border-radius: 50%;
+            margin: 0 2px;
+        }
+        
+        .life.lost {
+            background: #555;
+        }
+        
+        #cooldownBar {
+            width: 100%;
+            height: 5px;
+            background: #555;
+            margin-top: 5px;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        
+        #cooldownProgress {
+            height: 100%;
+            background: #4CAF50;
+            width: 0%;
+            transition: width 0.1s;
+        }
+        
+        #respawnTimer {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            display: none;
+            font-size: 24px;
+        }
+        
+        #instructions {
+            margin-top: 10px;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas"></canvas>
+        <div id="uiContainer">
+            <div id="connectionStatus" class="disconnected">Łączenie...</div>
+            <div>Gracze online: <span id="playerCount">0</span></div>
+            <div id="playerList"></div>
+            <div id="playerStats">
+                <div>Twoje życia: <span id="livesDisplay"></span></div>
+                <div>Cooldown strzału: 
+                    <div id="cooldownBar">
+                        <div id="cooldownProgress"></div>
+                    </div>
+                </div>
+            </div>
+            <div id="instructions">
+                <p><strong>Sterowanie:</strong></p>
+                <p>WASD - poruszanie się</p>
+                <p>Myszka - celowanie</p>
+                <p>Lewy przycisk myszy - strzał (cooldown 1s)</p>
+            </div>
+        </div>
+        <div id="respawnTimer">
+            Odradzanie za: <span id="respawnCounter">10</span>s
+        </div>
+    </div>
+
+    <script>
+        // Konfiguracja gry
+        const CONFIG = {
+            CANVAS_WIDTH: 2000,
+            CANVAS_HEIGHT: 2000,
+            PLAYER_RADIUS: 20,
+            PROJECTILE_RADIUS: 5,
+            PROJECTILE_SPEED: 10,
+            PLAYER_SPEED: 5,
+            SHOT_COOLDOWN: 1000 // 1 sekunda cooldown
+        };
+
+        // Elementy DOM
+        const gameCanvas = document.getElementById('gameCanvas');
+        const ctx = gameCanvas.getContext('2d');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const playerCount = document.getElementById('playerCount');
+        const playerList = document.getElementById('playerList');
+        const livesDisplay = document.getElementById('livesDisplay');
+        const cooldownProgress = document.getElementById('cooldownProgress');
+        const respawnTimer = document.getElementById('respawnTimer');
+        const respawnCounter = document.getElementById('respawnCounter');
+
+        // Dostosowanie canvas
+        function resizeCanvas() {
+            gameCanvas.width = window.innerWidth;
+            gameCanvas.height = window.innerHeight;
+        }
+        
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Stan gry
+        let gameState = {
+            players: {},
+            projectiles: [],
+            currentPlayerId: null,
+            isHost: false
+        };
+
+        // Stan lokalny
+        let localState = {
+            lastShotTime: 0,
+            respawnInterval: null
+        };
+
+        // WebSocket z poprawnym URL
+        let ws = null;
+        
+        function connectWebSocket() {
+            // Używamy tej samej domeny i portu, ale ścieżki /ws
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            const socket = new WebSocket(wsUrl);
+
+            
+            console.log('Łączenie z:', wsUrl);
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                console.log('Połączono z serwerem');
+                connectionStatus.textContent = 'Połączono';
+                connectionStatus.className = 'connected';
+            };
+            
+            ws.onclose = () => {
+                console.log('Rozłączono z serwerem');
+                connectionStatus.textContent = 'Rozłączono - próba ponownego połączenia...';
+                connectionStatus.className = 'disconnected';
+                setTimeout(connectWebSocket, 3000);
+            };
+            
+            ws.onerror = (error) => {
+                console.error('Błąd WebSocket:', error);
+                connectionStatus.textContent = 'Błąd połączenia';
+                connectionStatus.className = 'disconnected';
+            };
+            
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleServerMessage(data);
+                } catch (error) {
+                    console.error('Błąd parsowania wiadomości:', error);
+                }
+            };
+        }
+
+        // Obsługa wiadomości
+        function handleServerMessage(data) {
+            switch (data.type) {
+                case 'playerId':
+                    gameState.currentPlayerId = data.id;
+                    gameState.isHost = data.isHost;
+                    console.log(`ID: ${data.id}, Host: ${data.isHost}`);
+                    updatePlayerStats();
+                    break;
+                    
+                case 'gameState':
+                    gameState.players = data.players;
+                    gameState.projectiles = data.projectiles;
+                    updatePlayerList();
+                    updatePlayerStats();
+                    break;
+                    
+                case 'playerJoined':
+                    console.log(`Dołączył: ${data.playerId}`);
+                    break;
+                    
+                case 'playerLeft':
+                    console.log(`Wyszedł: ${data.playerId}`);
+                    delete gameState.players[data.playerId];
+                    updatePlayerList();
+                    break;
+
+                case 'playerDied':
+                    if (data.playerId === gameState.currentPlayerId) {
+                        startRespawnTimer(data.respawnTime);
+                    }
+                    break;
+            }
+        }
+
+        // Aktualizacja listy graczy
+        function updatePlayerList() {
+            playerCount.textContent = Object.keys(gameState.players).length;
+            playerList.innerHTML = '';
+            
+            Object.values(gameState.players).forEach(player => {
+                const playerItem = document.createElement('div');
+                playerItem.className = 'playerItem';
+                playerItem.style.backgroundColor = player.color;
+                const isCurrent = player.id === gameState.currentPlayerId;
+                const status = player.isAlive ? ` (Życia: ${player.lives})` : ' (MARTWY)';
+                playerItem.textContent = `Gracz ${player.id.substring(0, 8)}${isCurrent ? ' (Ty)' : ''}${status}`;
+                playerList.appendChild(playerItem);
+            });
+        }
+
+        // Aktualizacja statystyk gracza
+        function updatePlayerStats() {
+            const player = gameState.players[gameState.currentPlayerId];
+            if (!player) return;
+
+            // Wyświetl życia
+            livesDisplay.innerHTML = '';
+            for (let i = 0; i < 3; i++) {
+                const life = document.createElement('span');
+                life.className = `life ${i >= player.lives ? 'lost' : ''}`;
+                livesDisplay.appendChild(life);
+            }
+
+            // Aktualizuj cooldown
+            updateCooldownDisplay();
+        }
+
+        // Aktualizacja paska cooldown
+        function updateCooldownDisplay() {
+            const player = gameState.players[gameState.currentPlayerId];
+            if (!player || !player.isAlive) {
+                cooldownProgress.style.width = '0%';
+                return;
+            }
+
+            const now = Date.now();
+            const timeSinceLastShot = now - player.lastShotTime;
+            const cooldownPercent = Math.min((timeSinceLastShot / CONFIG.SHOT_COOLDOWN) * 100, 100);
+            
+            cooldownProgress.style.width = cooldownPercent + '%';
+        }
+
+        // Timer odradzania
+        function startRespawnTimer(respawnTime) {
+            respawnTimer.style.display = 'block';
+            
+            if (localState.respawnInterval) {
+                clearInterval(localState.respawnInterval);
+            }
+            
+            localState.respawnInterval = setInterval(() => {
+                const timeLeft = Math.max(0, Math.ceil((respawnTime - Date.now()) / 1000));
+                respawnCounter.textContent = timeLeft;
+                
+                if (timeLeft <= 0) {
+                    clearInterval(localState.respawnInterval);
+                    respawnTimer.style.display = 'none';
+                }
+            }, 100);
+        }
+
+        // Sterowanie
+        const keys = {};
+        let mouseX = 0, mouseY = 0;
+        
+        window.addEventListener('keydown', (e) => {
+            keys[e.key.toLowerCase()] = true;
+        });
+        
+        window.addEventListener('keyup', (e) => {
+            keys[e.key.toLowerCase()] = false;
+        });
+        
+        window.addEventListener('mousemove', (e) => {
+            mouseX = e.clientX;
+            mouseY = e.clientY;
+        });
+        
+        window.addEventListener('mousedown', (e) => {
+            if (e.button === 0) {
+                shootProjectile();
+            }
+        });
+
+        // Strzelanie z cooldown
+        function shootProjectile() {
+            if (!gameState.currentPlayerId || !ws) return;
+            
+            const player = gameState.players[gameState.currentPlayerId];
+            if (!player || !player.isAlive) return;
+
+            const now = Date.now();
+            if (now - player.lastShotTime < CONFIG.SHOT_COOLDOWN) {
+                return; // Cooldown aktywny
+            }
+
+            const angle = player.angle;
+            const projectile = {
+                x: player.x,
+                y: player.y,
+                velocityX: Math.cos(angle) * CONFIG.PROJECTILE_SPEED,
+                velocityY: Math.sin(angle) * CONFIG.PROJECTILE_SPEED,
+                color: player.color,
+                playerId: gameState.currentPlayerId,
+                createdAt: Date.now()
+            };
+            
+            // Zaktualizuj czas ostatniego strzału
+            player.lastShotTime = now;
+            updateCooldownDisplay();
+            
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'shoot',
+                    projectile: projectile,
+                    playerId: gameState.currentPlayerId
+                }));
+            }
+        }
+
+        // Aktualizacja gry
+        function updateGame() {
+            if (gameState.currentPlayerId && gameState.players[gameState.currentPlayerId]) {
+                const player = gameState.players[gameState.currentPlayerId];
+                
+                // Aktualizuj tylko jeśli gracz żyje
+                if (player.isAlive) {
+                    // Poruszanie
+                    player.velocityX = 0;
+                    player.velocityY = 0;
+                    
+                    if (keys['w']) player.velocityY = -CONFIG.PLAYER_SPEED;
+                    if (keys['s']) player.velocityY = CONFIG.PLAYER_SPEED;
+                    if (keys['a']) player.velocityX = -CONFIG.PLAYER_SPEED;
+                    if (keys['d']) player.velocityX = CONFIG.PLAYER_SPEED;
+                    
+                    player.x += player.velocityX;
+                    player.y += player.velocityY;
+                    
+                    // Granice
+                    player.x = Math.max(CONFIG.PLAYER_RADIUS, Math.min(CONFIG.CANVAS_WIDTH - CONFIG.PLAYER_RADIUS, player.x));
+                    player.y = Math.max(CONFIG.PLAYER_RADIUS, Math.min(CONFIG.CANVAS_HEIGHT - CONFIG.PLAYER_RADIUS, player.y));
+                    
+                    // Celowanie
+                    const canvasRect = gameCanvas.getBoundingClientRect();
+                    const worldX = (mouseX / gameCanvas.width) * CONFIG.CANVAS_WIDTH;
+                    const worldY = (mouseY / gameCanvas.height) * CONFIG.CANVAS_HEIGHT;
+                    player.angle = Math.atan2(worldY - player.y, worldX - player.x);
+                    
+                    // Wyślij aktualizację
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({
+                            type: 'playerUpdate',
+                            player: player
+                        }));
+                    }
+                }
+            }
+            
+            updateCooldownDisplay();
+            requestAnimationFrame(updateGame);
+        }
+
+        // Renderowanie
+        function renderGame() {
+            ctx.fillStyle = '#333';
+            ctx.fillRect(0, 0, gameCanvas.width, gameCanvas.height);
+            
+            // Gracze
+            Object.values(gameState.players).forEach(player => {
+                const screenX = (player.x / CONFIG.CANVAS_WIDTH) * gameCanvas.width;
+                const screenY = (player.y / CONFIG.CANVAS_HEIGHT) * gameCanvas.height;
+                
+                if (!player.isAlive) {
+                    // Renderuj martwego gracza jako szarego
+                    ctx.fillStyle = '#666';
+                    ctx.beginPath();
+                    ctx.arc(screenX, screenY, CONFIG.PLAYER_RADIUS, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    ctx.fillStyle = '#fff';
+                    ctx.font = '12px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('X', screenX, screenY + 4);
+                    return;
+                }
+                
+                // Kulka żywego gracza
+                ctx.fillStyle = player.color;
+                ctx.beginPath();
+                ctx.arc(screenX, screenY, CONFIG.PLAYER_RADIUS, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Kierunek
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(screenX, screenY);
+                ctx.lineTo(
+                    screenX + Math.cos(player.angle) * 30,
+                    screenY + Math.sin(player.angle) * 30
+                );
+                ctx.stroke();
+                
+                // Podświetlenie lokalnego gracza
+                if (player.id === gameState.currentPlayerId) {
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    ctx.arc(screenX, screenY, CONFIG.PLAYER_RADIUS + 3, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+            });
+            
+            // Pociski
+            gameState.projectiles.forEach(projectile => {
+                ctx.fillStyle = projectile.color;
+                ctx.beginPath();
+                ctx.arc(
+                    (projectile.x / CONFIG.CANVAS_WIDTH) * gameCanvas.width,
+                    (projectile.y / CONFIG.CANVAS_HEIGHT) * gameCanvas.height,
+                    CONFIG.PROJECTILE_RADIUS,
+                    0,
+                    Math.PI * 2
+                );
+                ctx.fill();
+            });
+            
+            requestAnimationFrame(renderGame);
+        }
+
+        // Start gry
+        function startGame() {
+            connectWebSocket();
+            updateGame();
+            renderGame();
+        }
+
+        window.addEventListener('load', startGame);
+    </script>
+</body>
+</html>
